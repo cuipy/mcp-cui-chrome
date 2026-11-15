@@ -234,6 +234,43 @@ const collectElements = new Function(
   `,
 ) as (selector: string) => RawElement[];
 
+const readCover = new Function(`
+  function isBar(el) {
+    return !el || el.id === 'cui-chrome-bar' || (el.closest && el.closest('#cui-chrome-bar'));
+  }
+  function shown(el) {
+    const style = window.getComputedStyle(el);
+    if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) return false;
+    const rect = el.getBoundingClientRect();
+    return rect.width >= 8 && rect.height >= 8 && rect.bottom > 0 && rect.right > 0 && rect.top < window.innerHeight && rect.left < window.innerWidth;
+  }
+  function labelOf(el) {
+    const name = el.getAttribute('aria-label') || '';
+    const text = (el.innerText || '').replace(/\\s+/g, ' ').trim();
+    return (name || text).slice(0, 40);
+  }
+  const dialogs = [...document.querySelectorAll('[role="dialog"], [role="alertdialog"], [aria-modal="true"]')].filter((el) => shown(el) && !isBar(el));
+  let layer = dialogs.length ? dialogs[dialogs.length - 1] : null;
+  if (!layer) {
+    const hit = document.elementFromPoint(Math.round(window.innerWidth / 2), Math.round(window.innerHeight / 2));
+    let node = hit;
+    while (node && node !== document.body && node !== document.documentElement) {
+      if (isBar(node)) break;
+      const style = window.getComputedStyle(node);
+      const rect = node.getBoundingClientRect();
+      const floating = style.position === 'fixed' || style.position === 'absolute';
+      const full = rect.width >= window.innerWidth * 0.96 && rect.height >= window.innerHeight * 0.96;
+      const big = rect.width >= window.innerWidth * 0.3 && rect.height >= window.innerHeight * 0.22;
+      if (floating && big && !full && shown(node)) layer = node;
+      node = node.parentElement;
+    }
+  }
+  if (!layer) return '';
+  const name = labelOf(layer);
+  const hint = '先关掉这层或按 Escape，再操作被挡住的内容。';
+  return name ? '遮挡：「' + name + '」。' + hint : '遮挡：页面上有一层挡住下面的内容。' + hint;
+`) as () => string;
+
 const readBody = new Function(`
   const root = document.querySelector('main') || document.body;
   const text = root && root.innerText ? root.innerText : '';
@@ -258,11 +295,15 @@ export async function takeSnapshot(page: Page, store: RefStore): Promise<string>
   });
 
   const body = await page.evaluate(readBody);
+  const cover = await page.evaluate(readCover);
   const title = await page.title();
   const hidden = ordered.length - shown.length;
   const tail = hidden > 0 ? `\n其余 ${hidden} 个元素未列出，滚动后再 snapshot。` : '';
-  const list = lines.length > 0 ? lines.join('\n') : '（没有可操作元素）';
-  return [`标题：${title || '（无标题）'}`, `网址：${page.url()}`, '', '元素：', list + tail, '', '正文：', body || '（没有正文）'].join('\n');
+  const list = lines.length > 0 ? lines.join('\n') : '（没有可操作元素。若这块内容本该有，刷新一次再读。）';
+  const blocks = [`标题：${title || '（无标题）'}`, `网址：${page.url()}`];
+  if (cover) blocks.push('', cover);
+  blocks.push('', '元素：', list + tail, '', '正文：', body || '（没有正文）');
+  return blocks.join('\n');
 }
 
 export async function locatorFor(page: Page, store: RefStore, ref: string): Promise<Locator> {

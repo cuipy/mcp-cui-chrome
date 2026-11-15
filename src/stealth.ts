@@ -90,6 +90,17 @@ export const setCuiChromeStatus = new Function(
   `,
 ) as (status: string) => void;
 
+/** 0 表示由 Chrome 自己选一个本机端口，供后启动的会话接上来。 */
+export function cdpPort(): number {
+  const raw = process.env.MCP_CHROME_CDP_PORT;
+  if (!raw) return 0;
+  const port = Number(raw);
+  if (!Number.isInteger(port) || port < 0 || port > 65535) {
+    throw new Error('MCP_CHROME_CDP_PORT 必须是 0 到 65535 的整数');
+  }
+  return port;
+}
+
 export function persistentContextOptions() {
   const headless = process.env.MCP_CHROME_HEADLESS === '1';
   const width = 1366 + Math.floor(Math.random() * 80);
@@ -98,6 +109,8 @@ export function persistentContextOptions() {
   const top = 40 + Math.floor(Math.random() * 40);
   const args = [
     '--disable-blink-features=AutomationControlled',
+    '--remote-debugging-address=127.0.0.1',
+    `--remote-debugging-port=${cdpPort()}`,
     `--window-position=${left},${top}`,
     `--window-size=${width},${height}`,
   ];

@@ -33,10 +33,14 @@ async function showStatus(page: Page, status: string): Promise<void> {
 }
 
 /** 先把准备做的事写到页面上，停一下，再执行。返回值同时带准备和结果。 */
-async function act(intent: string, fn: (page: Page) => Promise<string>): Promise<ToolResult> {
+async function act(
+  intent: string,
+  fn: (page: Page) => Promise<string>,
+  pick?: () => Promise<Page>,
+): Promise<ToolResult> {
   try {
     const text = await session.run(async () => {
-      const page = await session.ensure();
+      const page = pick ? await pick() : await session.ensure();
       await showStatus(page, intent);
       await sleep(PREPARE_PAUSE_MS);
       const outcome = await fn(page);
@@ -97,18 +101,30 @@ export function registerTools(server: McpServer): void {
     'browser_navigate',
     {
       title: '打开网页',
-      description: '通用：在当前标签打开一个 http(s) 地址。动作开始前页面会显示准备打开的地址，结束后显示成功或失败。',
+      description:
+        '通用：打开一个 http(s) 地址。浏览器里已经有相同地址的标签就切换过去用，没有再新建标签，不改别的标签。',
       inputSchema: z.object({
         url: z.string().describe('要打开的 http 或 https 地址'),
       }),
     },
     async ({ url }) => {
-      const intent = `准备：打开 ${clip(url, 60)}`;
-      return act(intent, async (page) => {
-        await page.goto(assertHttp(url), { waitUntil: 'domcontentloaded', timeout: 30000 });
-        await settle(page);
-        return `已打开 ${page.url()}`;
-      });
+      const target = assertHttp(url);
+      const intent = `准备：打开 ${clip(target, 60)}`;
+      let reused = false;
+      return act(
+        intent,
+        async (page) => {
+          if (reused) return `已切换到已打开的标签 ${page.url()}`;
+          await page.goto(target, { waitUntil: 'domcontentloaded', timeout: 30000 });
+          await settle(page);
+          return `已打开 ${page.url()}`;
+        },
+        async () => {
+          const picked = await session.pageFor(target);
+          reused = picked.reused;
+          return picked.page;
+        },
+      );
     },
   );
 
@@ -116,7 +132,8 @@ export function registerTools(server: McpServer): void {
     'browser_snapshot',
     {
       title: '读取页面',
-      description: '通用：读取当前页面的标题、网址、可操作元素编号和正文。不依赖某个网站的结构。',
+      description:
+        '通用：读取当前页面的标题、网址、可操作元素编号和正文。不依赖某个网站的结构。若本该有的内容不在，用 browser_reload 刷新一次再读。快照若写了遮挡，先关掉那一层或按 Escape。',
       inputSchema: z.object({}),
     },
     async () => {
@@ -129,7 +146,8 @@ export function registerTools(server: McpServer): void {
     'browser_click',
     {
       title: '拟人点击',
-      description: '通用：按快照编号点击。开始前显示要点的元素，结束后显示是否成功、页面有没有跳转。',
+      description:
+        '通用：按快照编号点击。开始前显示要点的元素，结束后显示是否成功、页面有没有跳转。落点被别的内容挡住时会失败，不点穿过去。',
       inputSchema: z.object({
         ref: z.string().describe('快照里的元素编号，例如 e3'),
         button: z.enum(['left', 'right', 'middle']).optional().describe('鼠标按键，默认左键'),
@@ -337,6 +355,24 @@ export function registerTools(server: McpServer): void {
   );
 
   server.registerTool(
+    'browser_reload',
+    {
+      title: '刷新页面',
+      description:
+        '通用：刷新当前标签，相当于 F5。快照里本该出现的按钮或正文没有时用一次，然后再读页面。不要连续反复刷新。',
+      inputSchema: z.object({}),
+    },
+    async () => {
+      const intent = '准备：刷新当前页面';
+      return act(intent, async (page) => {
+        await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
+        await settle(page);
+        return `已刷新 ${page.url()}`;
+      });
+    },
+  );
+
+  server.registerTool(
     'browser_go_back',
     {
       title: '后退',
@@ -392,20 +428,21 @@ export function registerTools(server: McpServer): void {
     'browser_close',
     {
       title: '关闭浏览器',
-      description: '通用：关掉这次启动的独立 Chrome。开始前在页面上说明，结束后说明是否已关闭。',
+      description: '通用：关掉这次会话自己打开的 Chrome。如果窗口是别的会话打开的，只断开连接，窗口留着。',
       inputSchema: z.object({}),
     },
     async () => {
       const intent = '准备：关闭浏览器';
       try {
-        await session.run(async () => {
+        const outcome = await session.run(async () => {
           const page = await session.ensure();
           await showStatus(page, intent);
           await sleep(PREPARE_PAUSE_MS);
-          await showStatus(page, '结果：成功。正在关闭');
-          await session.close();
+          const closing = session.ownsWindow();
+          await showStatus(page, closing ? '结果：成功。正在关闭' : '结果：成功。断开连接，窗口保留');
+          return session.close();
         });
-        return textResult(`${intent}\n结果：成功。浏览器已关闭`);
+        return textResult(`${intent}\n结果：成功。${outcome}`);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         return textResult(`${intent}\n结果：失败。${message}`, true);

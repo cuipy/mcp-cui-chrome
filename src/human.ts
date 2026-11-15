@@ -127,6 +127,18 @@ async function bringIntoView(
   return box;
 }
 
+const hitCover = new Function(
+  'el',
+  'point',
+  `
+    const hit = document.elementFromPoint(point.x, point.y);
+    if (!hit || hit === el || el.contains(hit) || hit.contains(el)) return '';
+    if (hit.closest && hit.closest('#cui-chrome-bar')) return '';
+    const text = (hit.innerText || hit.getAttribute('aria-label') || hit.getAttribute('title') || '').replace(/\\s+/g, ' ').trim().slice(0, 40);
+    return text || hit.tagName.toLowerCase();
+  `,
+) as (el: Element, point: { x: number; y: number }) => string;
+
 function clickPoint(
   box: { x: number; y: number; width: number; height: number },
   view: { w: number; h: number },
@@ -157,6 +169,10 @@ export async function humanClick(
   const point = clickPoint(box, view);
   await humanMove(page, pointer, point);
   await sleep(rand(40, 180));
+  const covered = await locator.evaluate(hitCover, point);
+  if (covered) {
+    throw new Error(`点击位置被挡住了：「${covered}」。先关闭这层遮挡或按 Escape，不要点穿过去。`);
+  }
   await page.mouse.down({ button });
   await sleep(rand(30, 90));
   await page.mouse.up({ button });

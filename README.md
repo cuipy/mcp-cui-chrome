@@ -4,6 +4,8 @@
 
 浏览器是这台电脑上已经安装的 Google Chrome，配置目录单独放在 `%LOCALAPPDATA%\mcp-cui-chrome\chrome-profile`，不会占用日常使用的那个窗口。在这个窗口里登录过的网站，下次还会保持登录。
 
+多个 Cursor 会话共用这一个窗口。先连上的会话负责打开它，后连上的会话接到同一个窗口，不再另开一个。两边的点击、输入会排队。后连上的会话如果调用关闭，只断开自己，窗口留着。
+
 ## 每一步都有说明
 
 每个动作都会先停一下，再动手：
@@ -48,8 +50,9 @@ npm run build
 
 | 工具 | 作用 |
 | --- | --- |
-| `browser_navigate` | 打开网址。第一次调用会弹出 Chrome |
-| `browser_snapshot` | 标题、网址、可操作元素编号、正文 |
+| `browser_navigate` | 打开网址。相同地址的标签已存在就切过去，否则新建标签 |
+| `browser_snapshot` | 标题、网址、可操作元素编号、正文。有遮挡层会先写出来 |
+| `browser_reload` | 刷新当前页，相当于 F5。本该有的内容没有时用一次 |
 | `browser_click` | 沿鼠标轨迹移动后点击 |
 | `browser_type` | 逐字输入，可选先清空、输入后回车 |
 | `browser_press` | 按键，例如 Enter、Escape |
@@ -59,7 +62,7 @@ npm run build
 | `browser_tabs` | 列出、新建、切换、关闭标签 |
 | `browser_go_back` | 后退 |
 | `browser_screenshot` | 当前视口截图 |
-| `browser_close` | 关掉这次启动的 Chrome |
+| `browser_close` | 关掉自己打开的 Chrome；接到别人的窗口时只断开连接 |
 
 点击、输入和滚动都带随机停顿。鼠标走贝塞尔曲线，落点在元素内部的随机位置，不是每次都点正中心。
 
@@ -70,6 +73,7 @@ npm run build
 | `MCP_CHROME_PROFILE` | 换一个配置目录 |
 | `MCP_CHROME_PATH` | Chrome 不在默认位置时，填 `chrome.exe` 的完整路径 |
 | `MCP_CHROME_HEADLESS` | 设为 `1` 时不显示窗口。有窗口时更接近真人使用 |
+| `MCP_CHROME_CDP_PORT` | 给后启动的会话留的本机调试端口。不设或设为 `0` 时由 Chrome 自己选 |
 
 ## 能力边界
 
