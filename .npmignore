@@ -1,0 +1,6 @@
+src/
+scripts/
+.cursor/
+.chrome-profile/
+*.log
+tsconfig.json

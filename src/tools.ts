@@ -102,7 +102,7 @@ export function registerTools(server: McpServer): void {
     {
       title: '打开网页',
       description:
-        '通用：打开一个 http(s) 地址。浏览器里已经有相同地址的标签就切换过去用，没有再新建标签，不改别的标签。',
+        '用户要打开 Chrome 或访问网页时用这个，不要用 IDE 内置浏览器。打开一个 http(s) 地址。相同地址的标签已存在就切换过去，没有再新建，不改别的标签。',
       inputSchema: z.object({
         url: z.string().describe('要打开的 http 或 https 地址'),
       }),
@@ -133,7 +133,7 @@ export function registerTools(server: McpServer): void {
     {
       title: '读取页面',
       description:
-        '通用：读取当前页面的标题、网址、可操作元素编号和正文。不依赖某个网站的结构。若本该有的内容不在，用 browser_reload 刷新一次再读。快照若写了遮挡，先关掉那一层或按 Escape。',
+        '用户要看当前 Chrome 页面时用这个。读取标题、网址、可操作元素编号和正文。若本该有的内容不在，用 browser_reload 刷新一次再读。快照若写了遮挡，先关掉那一层或按 Escape。',
       inputSchema: z.object({}),
     },
     async () => {

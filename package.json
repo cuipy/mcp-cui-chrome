@@ -1,9 +1,15 @@
 {
   "name": "mcp-cui-chrome",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
-  "description": "用拟人操作驱动本机 Chrome 的 MCP 服务",
+  "license": "MIT",
+  "description": "Drive a dedicated local Chrome with human-like clicks, typing, and scrolling.",
+  "mcpName": "io.github.cuipy/mcp-cui-chrome",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cuipy/mcp-cui-chrome.git"
+  },
+  "files": ["dist", "README.md", "LICENSE"],
   "bin": {
     "mcp-cui-chrome": "dist/index.js"
   },

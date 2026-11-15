@@ -1,6 +1,6 @@
 # mcp-cui-chrome
 
-通用的本地 Chrome 操作 MCP。它不针对任何一个网站，也不内置某个业务的填写流程。Cursor 里的模型用它打开任意 http(s) 页面，读取上面能点的元素，再像人一样点击、输入、滚动。
+通用的本地 Chrome 操作 MCP。它不针对任何一个网站，也不内置某个业务的填写流程。服务说明会告诉模型：用户说打开 Chrome、打开网页、登录、点击或看页面时，用这套工具，不要改用 IDE 里的内置浏览器。窗口左下角有黄色 cui-chrome 标签。
 
 浏览器是这台电脑上已经安装的 Google Chrome，配置目录单独放在 `%LOCALAPPDATA%\mcp-cui-chrome\chrome-profile`，不会占用日常使用的那个窗口。在这个窗口里登录过的网站，下次还会保持登录。
 
@@ -22,27 +22,27 @@
 
 ## 安装
 
-```bash
-npm install
-npm run build
-```
-
-## 接到 Cursor
-
-在项目或用户的 MCP 配置里加上：
+本机已安装 Google Chrome 时，在 MCP 配置里这样接：
 
 ```json
 {
   "mcpServers": {
     "cui-chrome": {
-      "command": "node",
-      "args": ["D:/source/ws_game/mcp-cui-chrome/dist/index.js"]
+      "command": "npx",
+      "args": ["-y", "mcp-cui-chrome"]
     }
   }
 }
 ```
 
 改完后重载 MCP。日志走 stderr，标准输出只留给协议。
+
+从源码开发：
+
+```bash
+npm install
+npm run build
+```
 
 ## 工具
 

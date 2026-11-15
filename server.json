@@ -1,0 +1,21 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.cuipy/mcp-cui-chrome",
+  "title": "cui-chrome",
+  "description": "Drive a dedicated local Chrome with human-like clicks, typing, and scrolling.",
+  "repository": {
+    "url": "https://github.com/cuipy/mcp-cui-chrome",
+    "source": "github"
+  },
+  "version": "0.1.0",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "mcp-cui-chrome",
+      "version": "0.1.0",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}

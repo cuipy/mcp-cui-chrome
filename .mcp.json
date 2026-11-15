@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "cui-chrome": {
+      "command": "npx",
+      "args": ["-y", "mcp-cui-chrome"]
+    }
+  }
+}
