@@ -1,0 +1,84 @@
+# mcp-cui-chrome
+
+通用的本地 Chrome 操作 MCP。它不针对任何一个网站，也不内置某个业务的填写流程。Cursor 里的模型用它打开任意 http(s) 页面，读取上面能点的元素，再像人一样点击、输入、滚动。
+
+浏览器是这台电脑上已经安装的 Google Chrome，配置目录单独放在 `%LOCALAPPDATA%\mcp-cui-chrome\chrome-profile`，不会占用日常使用的那个窗口。在这个窗口里登录过的网站，下次还会保持登录。
+
+## 每一步都有说明
+
+每个动作都会先停一下，再动手：
+
+1. 开始前，窗口左下角的黄底标签写成 `cui-chrome  准备：…`，工具返回值的第一行也是这句。
+2. 做完后，标签和返回值都改成 `结果：成功。…` 或 `结果：失败。…`。失败时带上原因。
+
+页面上每个元素都会标出控件类型和对应操作，例如「操作：输入文字」「操作：点开后点选一项，不要输入文字」「操作：点击」「操作：拖动」。输入工具只接受文本框。下拉框要先点开，再点里面的选项。
+
+## 环境
+
+- Node.js 20 或更高
+- 已安装的 Google Chrome
+
+## 安装
+
+```bash
+npm install
+npm run build
+```
+
+## 接到 Cursor
+
+在项目或用户的 MCP 配置里加上：
+
+```json
+{
+  "mcpServers": {
+    "cui-chrome": {
+      "command": "node",
+      "args": ["D:/source/ws_game/mcp-cui-chrome/dist/index.js"]
+    }
+  }
+}
+```
+
+改完后重载 MCP。日志走 stderr，标准输出只留给协议。
+
+## 工具
+
+模型先看页面，再按编号操作。编号形如 `e1`、`e3`，页面一变就要重新读取。
+
+| 工具 | 作用 |
+| --- | --- |
+| `browser_navigate` | 打开网址。第一次调用会弹出 Chrome |
+| `browser_snapshot` | 标题、网址、可操作元素编号、正文 |
+| `browser_click` | 沿鼠标轨迹移动后点击 |
+| `browser_type` | 逐字输入，可选先清空、输入后回车 |
+| `browser_press` | 按键，例如 Enter、Escape |
+| `browser_hover` | 悬停，不点击 |
+| `browser_drag` | 按住一个元素拖到另一个元素，或按像素偏移拖动 |
+| `browser_scroll` | 分段滚轮 |
+| `browser_tabs` | 列出、新建、切换、关闭标签 |
+| `browser_go_back` | 后退 |
+| `browser_screenshot` | 当前视口截图 |
+| `browser_close` | 关掉这次启动的 Chrome |
+
+点击、输入和滚动都带随机停顿。鼠标走贝塞尔曲线，落点在元素内部的随机位置，不是每次都点正中心。
+
+## 环境变量
+
+| 变量 | 作用 |
+| --- | --- |
+| `MCP_CHROME_PROFILE` | 换一个配置目录 |
+| `MCP_CHROME_PATH` | Chrome 不在默认位置时，填 `chrome.exe` 的完整路径 |
+| `MCP_CHROME_HEADLESS` | 设为 `1` 时不显示窗口。有窗口时更接近真人使用 |
+
+## 能力边界
+
+启动参数去掉了自动化开关，并用补丁版 Playwright 遮住常见的调试协议痕迹。这能降低「一眼看出是脚本」的概率。依赖 IP 信誉或验证码的网站仍然可能拦住访问。这个服务不处理验证码。
+
+## 本地冒烟
+
+```bash
+npm run smoke
+```
+
+会弹出 Chrome，打开 example.com，点其中的链接，再打开检测页看 `navigator.webdriver`。

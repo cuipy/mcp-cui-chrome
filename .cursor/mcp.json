@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "cui-chrome": {
+      "command": "node",
+      "args": ["D:/source/ws_game/mcp-cui-chrome/dist/index.js"]
+    }
+  }
+}
