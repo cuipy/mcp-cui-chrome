@@ -1,6 +1,6 @@
 {
   "name": "mcp-cui-chrome",
-  "version": "0.1.0",
+  "version": "0.0.4",
   "type": "module",
   "license": "MIT",
   "description": "Drive a dedicated local Chrome with human-like clicks, typing, and scrolling.",
