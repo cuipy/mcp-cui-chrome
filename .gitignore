@@ -4,3 +4,4 @@ dist/
 .chrome-profile/
 local/
 temp/
+.cursor/
