@@ -1,5 +1,7 @@
+import { readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 /** 独立 Chrome 配置目录，和日常使用的用户数据分开。 */
 export function profileDir(): string {
@@ -35,15 +37,41 @@ export const stripPlaywrightArtifacts = new Function(`
   if (!record.chrome) record.chrome = {};
 `) as () => void;
 
+/** package.json 里的版本号，黄条标签和 MCP 服务声明都用它，避免多处写死。 */
+export function packageVersion(): string {
+  try {
+    const file = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'package.json');
+    const pkg = JSON.parse(readFileSync(file, 'utf8')) as { version?: unknown };
+    return typeof pkg.version === 'string' ? pkg.version : '';
+  } catch {
+    return '';
+  }
+}
+
+/** 黄条标签，形如 cui-chrome[v7]，取版本号最后一段。 */
+function barLabel(): string {
+  const patch = packageVersion().split('.')[2];
+  return patch ? `cui-chrome[v${patch}]` : 'cui-chrome';
+}
+
 /**
  * 左下角黄底标签。data-cui-status 由操作前后写入，页面上能直接看到。
  * addInitScript 会把脚本注入到每个 frame，这里只在顶层页面挂载，避免 iframe 里也出现标签。
  */
 export const showCuiChromeBar = new Function(`
-  if (window.top !== window) return;
   const HOST_ID = 'cui-chrome-bar';
-  const LABEL = 'cui-chrome';
+  const LABEL = ${JSON.stringify(barLabel())};
+
+  const isTop = () => {
+    try {
+      return window.top === window;
+    } catch {
+      return false;
+    }
+  };
+
   let bar = null;
+  let mounted = false;
 
   const paint = (host) => {
     if (!bar) return;
@@ -51,9 +79,20 @@ export const showCuiChromeBar = new Function(`
     bar.textContent = status ? LABEL + '  ' + status : LABEL;
   };
 
+  const unmount = () => {
+    if (isTop()) return false;
+    const host = document.getElementById(HOST_ID);
+    if (host) host.remove();
+    bar = null;
+    mounted = false;
+    return true;
+  };
+
   const mount = () => {
+    if (mounted || !isTop()) return;
     const root = document.documentElement;
     if (!root || document.getElementById(HOST_ID)) return;
+    mounted = true;
     const host = document.createElement('div');
     host.id = HOST_ID;
     host.setAttribute('data-cui-chrome', 'bar');
@@ -79,11 +118,22 @@ export const showCuiChromeBar = new Function(`
     paint(host);
   };
 
-  mount();
-  document.addEventListener('DOMContentLoaded', mount);
+  setTimeout(mount, 50);
+  document.addEventListener('DOMContentLoaded', () => setTimeout(mount, 50));
   if (document.documentElement) {
-    new MutationObserver(mount).observe(document.documentElement, { childList: true });
+    new MutationObserver(() => {
+      if (unmount()) return;
+      mount();
+    }).observe(document.documentElement, { childList: true });
   }
+
+  let checks = 0;
+  const watchdog = () => {
+    if (unmount()) return;
+    checks += 1;
+    if (checks < 4) setTimeout(watchdog, checks === 1 ? 300 : 1000);
+  };
+  setTimeout(watchdog, 300);
 `) as () => void;
 
 export const setCuiChromeStatus = new Function(

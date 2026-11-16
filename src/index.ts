@@ -5,6 +5,7 @@ const { McpServer } = await import('@modelcontextprotocol/server');
 const { serveStdio } = await import('@modelcontextprotocol/server/stdio');
 const { registerTools } = await import('./tools.js');
 const { session } = await import('./session.js');
+const { packageVersion } = await import('./stealth.js');
 
 const INSTRUCTIONS = [
   '这是用户本机上单独的一个 Chrome，窗口左下角有黄色 cui-chrome 标签，不是 IDE 里内置的浏览器。',
@@ -15,7 +16,7 @@ const INSTRUCTIONS = [
 ].join('');
 
 function createServer(): InstanceType<typeof McpServer> {
-  const server = new McpServer({ name: 'mcp-cui-chrome', version: '0.1.0' }, { instructions: INSTRUCTIONS });
+  const server = new McpServer({ name: 'mcp-cui-chrome', version: packageVersion() || '0.1.0' }, { instructions: INSTRUCTIONS });
   registerTools(server);
   return server;
 }
