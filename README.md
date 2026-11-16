@@ -58,7 +58,7 @@ npm run build
 | `browser_click` | 沿鼠标轨迹移动后点击 |
 | `browser_read_element` | 读取元素信息：文字、标签、属性、状态、位置尺寸、CSS 样式。文字藏在封闭影子节点里时会用调试协议穿透读取 |
 | `browser_wait` | 等待元素出现、可见、消失或文字包含指定内容，替代固定延时 |
-| `browser_dialog` | 处理网页的 alert / confirm / prompt 弹窗，点确定或取消 |
+| `browser_dialog` | 管理 alert / confirm / prompt 弹窗：arm 登记自动处理，触发弹窗后 list 查看记录，off 取消 |
 | `browser_type` | 逐字输入，可选先清空、输入后回车 |
 | `browser_press` | 按键，例如 Enter、Escape |
 | `browser_hover` | 悬停，不点击 |

@@ -523,15 +523,20 @@ const readElementCore = new Function(
   `,
 ) as (el: Element, cssProps: string[]) => Omit<ElementDetails, 'shadowText'>;
 
-/** 递归收集 CDP 节点树里的可见文字，包含 shadowRoots。 */
-function collectNodeText(node: Record<string, unknown> | undefined, out: string[]): void {
-  if (!node) return;
-  const text = node['nodeValue'];
-  if (node['nodeName'] === '#text' && typeof text === 'string' && text.trim()) out.push(text.trim());
-  const children = node['children'];
-  if (Array.isArray(children)) for (const child of children) collectNodeText(child as Record<string, unknown>, out);
-  const roots = node['shadowRoots'];
-  if (Array.isArray(roots)) for (const root of roots) collectNodeText(root as Record<string, unknown>, out);
+/** 从一段 HTML 里去掉标签、还原实体，抽出可见文字。 */
+function htmlToText(html: string): string {
+  return html
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 /**
@@ -556,9 +561,20 @@ export async function readElementDetails(
       const { nodeId } = await cdp.send('DOM.querySelector', { nodeId: root.nodeId, selector: selector.trim() });
       if (nodeId) {
         const { node } = await cdp.send('DOM.describeNode', { nodeId, pierce: true });
-        const texts: string[] = [];
-        collectNodeText(node as unknown as Record<string, unknown>, texts);
-        shadowText = texts.join(' ').replace(/\s+/g, ' ').trim();
+        const htmlParts: string[] = [];
+        const { outerHTML } = await cdp.send('DOM.getOuterHTML', { nodeId });
+        if (outerHTML) htmlParts.push(outerHTML);
+        // describeNode 只给出 shadowRoots 的节点头，子节点不展开；用它们的 nodeId 单独取 HTML。
+        const roots = (node as unknown as { shadowRoots?: Array<{ nodeId: number }> }).shadowRoots ?? [];
+        for (const sr of roots) {
+          try {
+            const part = await cdp.send('DOM.getOuterHTML', { nodeId: sr.nodeId });
+            if (part.outerHTML) htmlParts.push(part.outerHTML);
+          } catch {
+            /* 某个影子根取不到不影响其它部分。 */
+          }
+        }
+        shadowText = htmlToText(htmlParts.join(' '));
       }
     } catch {
       /* CDP 不可用时保留空值，不影响常规信息返回。 */

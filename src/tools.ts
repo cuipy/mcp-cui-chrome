@@ -46,6 +46,22 @@ function hintLabel(ref: string | undefined, selector: string | undefined): strin
 
 type ResolvedTarget = { locator: Locator; label: string; gesture: string };
 
+type DialogLog = { type: string; message: string; how: string };
+type DialogState = {
+  action: 'accept' | 'dismiss';
+  text?: string;
+  logs: DialogLog[];
+  handler: (d: Dialog) => Promise<void>;
+};
+const dialogStates = new Map<Page, DialogState>();
+
+function detachDialog(page: Page): void {
+  const state = dialogStates.get(page);
+  if (!state) return;
+  page.off('dialog', state.handler);
+  dialogStates.delete(page);
+}
+
 /** ref 和 selector 二选一：编号走快照，选择器直接按 CSS 找。 */
 async function resolveTarget(
   page: Page,
@@ -472,45 +488,49 @@ export function registerTools(server: McpServer): void {
     {
       title: '处理弹窗',
       description:
-        '处理网页弹出的 JavaScript 提示框（alert 警告、confirm 确认、prompt 输入）。这类弹窗会挡住页面，必须先处理才能继续操作。action=accept 点确定、dismiss 点取消、text 是给 prompt 填的文字、message 返回弹窗内容。可以先设 auto 让之后的弹窗自动处理。',
+        '管理网页的 JavaScript 弹窗（alert 警告、confirm 确认、prompt 输入）。浏览器默认会自动关掉弹窗导致事后接不到，所以要先用本工具登记自动处理，再去点击触发弹窗的按钮，弹窗会被自动接住并记下内容。action=arm 登记处理方式（accept 确定 / dismiss 取消，text 是 prompt 要填的字），list 查看接到的弹窗记录，off 取消登记。典型顺序：browser_dialog(arm) → 点击触发弹窗 → browser_dialog(list)。',
       inputSchema: z.object({
-        action: z.enum(['accept', 'dismiss']).describe('accept 点确定，dismiss 点取消'),
-        text: z.string().optional().describe('prompt 输入框里要填的文字，仅 accept 时有效'),
+        action: z.enum(['arm', 'list', 'off']).describe('arm 登记自动处理，list 查看已接到的弹窗，off 取消登记'),
+        mode: z.enum(['accept', 'dismiss']).optional().describe('arm 时：accept 点确定，dismiss 点取消，默认 accept'),
+        text: z.string().optional().describe('arm 时：prompt 输入框要填的文字'),
       }),
     },
-    async ({ action, text }) => {
-      const intent = `准备：处理弹窗（${action === 'accept' ? '确定' : '取消'}）`;
+    async ({ action, mode, text }) => {
+      const how = mode === 'dismiss' ? '取消' : '确定';
+      const intent = `准备：弹窗 ${action === 'arm' ? `登记自动${how}` : action === 'list' ? '记录' : '取消登记'}`;
       return act(intent, async (page) => {
-        const dialog = await new Promise<{ message: string; type: string; defaultValue: string } | null>((resolve) => {
-          let done = false;
-          const handler = async (d: Dialog) => {
-            if (done) return;
-            done = true;
-            page.off('dialog', handler);
-            const info = { message: d.message(), type: d.type(), defaultValue: d.defaultValue() };
-            try {
-              if (action === 'accept') await d.accept(text);
-              else await d.dismiss();
-              resolve(info);
-            } catch (err) {
-              resolve({ ...info, message: `${info.message}（处理失败：${err instanceof Error ? err.message : String(err)}）` });
-            }
-          };
-          page.on('dialog', handler);
-          setTimeout(() => {
-            if (!done) {
-              done = true;
-              page.off('dialog', handler);
-              resolve(null);
-            }
-          }, 5000);
-        });
-        if (!dialog) {
-          throw new Error('5 秒内没有等到弹窗。先执行会触发弹窗的操作（例如点某个按钮），再调用本工具；弹窗会阻塞页面，所以本工具需要先挂起等待它出现。');
+        if (action === 'off') {
+          detachDialog(page);
+          return '已取消弹窗自动处理，恢复浏览器默认行为';
         }
-        const typeLabel: Record<string, string> = { alert: '警告', confirm: '确认', prompt: '输入' };
-        const how = action === 'accept' ? '已确定' : '已取消';
-        return `${how}${typeLabel[dialog.type] ?? dialog.type}框「${clip(dialog.message, 80)}」${action === 'accept' && text !== undefined ? `，填入「${clip(text)}」` : ''}`;
+        if (action === 'list') {
+          const state = dialogStates.get(page);
+          if (!state || state.logs.length === 0) {
+            return state ? '已登记自动处理，但还没有接到弹窗' : '没有登记弹窗自动处理。先用 arm 登记。';
+          }
+          const lines = state.logs.map((log, i) => {
+            const t: Record<string, string> = { alert: '警告', confirm: '确认', prompt: '输入', beforeunload: '离开页面' };
+            return `${i + 1}. ${t[log.type] ?? log.type}框 ${log.how}「${clip(log.message, 100)}」`;
+          });
+          return `接到 ${state.logs.length} 个弹窗：\n${lines.join('\n')}`;
+        }
+        detachDialog(page);
+        const chosen: 'accept' | 'dismiss' = mode === 'dismiss' ? 'dismiss' : 'accept';
+        const logs: DialogLog[] = [];
+        const handler = async (d: Dialog) => {
+          const type = d.type();
+          const message = d.message();
+          try {
+            if (chosen === 'accept') await d.accept(text);
+            else await d.dismiss();
+            logs.push({ type, message, how: chosen === 'accept' ? '已确定' : '已取消' });
+          } catch (err) {
+            logs.push({ type, message, how: `处理失败：${err instanceof Error ? err.message : String(err)}` });
+          }
+        };
+        page.on('dialog', handler);
+        dialogStates.set(page, { action: chosen, text, logs, handler });
+        return `已登记：之后的弹窗自动${how}${chosen === 'accept' && text !== undefined ? `，prompt 填入「${clip(text)}」` : ''}。现在去点击会触发弹窗的按钮，之后用 list 查看接到的内容。`;
       });
     },
   );
