@@ -35,8 +35,12 @@ export const stripPlaywrightArtifacts = new Function(`
   if (!record.chrome) record.chrome = {};
 `) as () => void;
 
-/** 左下角黄底标签。data-cui-status 由操作前后写入，页面上能直接看到。 */
+/**
+ * 左下角黄底标签。data-cui-status 由操作前后写入，页面上能直接看到。
+ * addInitScript 会把脚本注入到每个 frame，这里只在顶层页面挂载，避免 iframe 里也出现标签。
+ */
 export const showCuiChromeBar = new Function(`
+  if (window.top !== window) return;
   const HOST_ID = 'cui-chrome-bar';
   const LABEL = 'cui-chrome';
   let bar = null;
