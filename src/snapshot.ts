@@ -1,4 +1,4 @@
-import type { Frame, Locator, Page } from 'rebrowser-playwright';
+import type { CDPSession, Frame, Locator, Page } from 'rebrowser-playwright';
 import type { FrameRef, RefEntry } from './session.js';
 
 const INTERACTIVE_SELECTOR = [
@@ -460,4 +460,112 @@ export async function locatorForSelector(page: Page, selector: string, nth = 0):
   const info = await target.evaluate(inspectElement).catch(() => null);
   const label = `CSS「${sketch(query, 40)}」${info?.name ? `「${sketch(info.name, 30)}」` : ''}${info?.disabled ? ' 禁用' : ''}${hit.where}`;
   return { locator: target, label, gesture: info?.gesture ?? '' };
+}
+
+/* ---------------- 读取元素信息（对标 Selenium 的 Web Element 信息读取） ---------------- */
+
+export type ElementDetails = {
+  tag: string;
+  innerText: string;
+  textContent: string;
+  /** 穿透 closed shadow DOM 读到的文字，普通脚本读不到时用 CDP 补上。 */
+  shadowText: string;
+  attributes: Record<string, string>;
+  state: {
+    visible: boolean;
+    enabled: boolean;
+    checked: boolean;
+    selected: boolean;
+    focused: boolean;
+  };
+  box: { x: number; y: number; width: number; height: number } | null;
+  styles: Record<string, string>;
+};
+
+/** 页面内执行：读取元素的标签、文字、属性、状态、位置、指定样式。 */
+const readElementCore = new Function(
+  'el',
+  'cssProps',
+  `
+    const tag = el.tagName.toLowerCase();
+    const innerText = (el.innerText || '').trim();
+    const textContent = (el.textContent || '').trim();
+    const attributes = {};
+    for (const attr of el.attributes || []) attributes[attr.name] = attr.value;
+    const style = window.getComputedStyle(el);
+    const rect = el.getBoundingClientRect();
+    const state = {
+      visible: rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden',
+      enabled: !el.matches(':disabled') && el.getAttribute('aria-disabled') !== 'true',
+      checked: el.checked === true || el.getAttribute('aria-checked') === 'true',
+      selected: el.selected === true || el.getAttribute('aria-selected') === 'true',
+      focused: document.activeElement === el || (el.contains && el.contains(document.activeElement)),
+    };
+    const styles = {};
+    for (const prop of cssProps) {
+      if (!prop) continue;
+      styles[prop] = style.getPropertyValue(prop);
+    }
+    return {
+      tag,
+      innerText,
+      textContent,
+      attributes,
+      state,
+      box: {
+        x: Math.round(rect.x),
+        y: Math.round(rect.y),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+      },
+      styles,
+    };
+  `,
+) as (el: Element, cssProps: string[]) => Omit<ElementDetails, 'shadowText'>;
+
+/** 递归收集 CDP 节点树里的可见文字，包含 shadowRoots。 */
+function collectNodeText(node: Record<string, unknown> | undefined, out: string[]): void {
+  if (!node) return;
+  const text = node['nodeValue'];
+  if (node['nodeName'] === '#text' && typeof text === 'string' && text.trim()) out.push(text.trim());
+  const children = node['children'];
+  if (Array.isArray(children)) for (const child of children) collectNodeText(child as Record<string, unknown>, out);
+  const roots = node['shadowRoots'];
+  if (Array.isArray(roots)) for (const root of roots) collectNodeText(root as Record<string, unknown>, out);
+}
+
+/**
+ * 读取元素完整信息。普通属性用 locator 读；文字若为空，再用 CDP 的 pierce 能力
+ * 穿透 closed shadow DOM 补读（Playwright 的 >>> 选择器对 closed shadow 无效）。
+ */
+export async function readElementDetails(
+  page: Page,
+  locator: Locator,
+  selector: string | undefined,
+  cssProps: string[],
+): Promise<ElementDetails> {
+  const core = await locator.first().evaluate(readElementCore, cssProps);
+
+  let shadowText = '';
+  if (selector && selector.trim() && !core.innerText && !core.textContent) {
+    let cdp: CDPSession | null = null;
+    try {
+      cdp = await page.context().newCDPSession(page);
+      await cdp.send('DOM.enable');
+      const { root } = await cdp.send('DOM.getDocument', { depth: -1, pierce: true });
+      const { nodeId } = await cdp.send('DOM.querySelector', { nodeId: root.nodeId, selector: selector.trim() });
+      if (nodeId) {
+        const { node } = await cdp.send('DOM.describeNode', { nodeId, pierce: true });
+        const texts: string[] = [];
+        collectNodeText(node as unknown as Record<string, unknown>, texts);
+        shadowText = texts.join(' ').replace(/\s+/g, ' ').trim();
+      }
+    } catch {
+      /* CDP 不可用时保留空值，不影响常规信息返回。 */
+    } finally {
+      if (cdp) await cdp.detach().catch(() => undefined);
+    }
+  }
+
+  return { ...core, shadowText };
 }

@@ -7,12 +7,12 @@
     "url": "https://github.com/cuipy/mcp-cui-chrome",
     "source": "github"
   },
-  "version": "0.0.10",
+  "version": "0.1.13",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "mcp-cui-chrome",
-      "version": "0.0.10",
+      "version": "0.1.13",
       "transport": {
         "type": "stdio"
       }

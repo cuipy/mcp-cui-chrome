@@ -56,6 +56,9 @@ npm run build
 | `browser_snapshot` | 标题、网址、可操作元素编号、正文。有遮挡层会先写出来 |
 | `browser_reload` | 刷新当前页，相当于 F5。本该有的内容没有时用一次 |
 | `browser_click` | 沿鼠标轨迹移动后点击 |
+| `browser_read_element` | 读取元素信息：文字、标签、属性、状态、位置尺寸、CSS 样式。文字藏在封闭影子节点里时会用调试协议穿透读取 |
+| `browser_wait` | 等待元素出现、可见、消失或文字包含指定内容，替代固定延时 |
+| `browser_dialog` | 处理网页的 alert / confirm / prompt 弹窗，点确定或取消 |
 | `browser_type` | 逐字输入，可选先清空、输入后回车 |
 | `browser_press` | 按键，例如 Enter、Escape |
 | `browser_hover` | 悬停，不点击 |

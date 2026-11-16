@@ -1,5 +1,5 @@
 import type { McpServer } from '@modelcontextprotocol/server';
-import type { Locator, Page } from 'rebrowser-playwright';
+import type { Dialog, Locator, Page } from 'rebrowser-playwright';
 import * as z from 'zod/v4';
 import {
   humanClick,
@@ -13,7 +13,7 @@ import {
 } from './human.js';
 import { session } from './session.js';
 import { setCuiChromeStatus } from './stealth.js';
-import { locatorFor, locatorForSelector, takeSnapshot } from './snapshot.js';
+import { locatorFor, locatorForSelector, readElementDetails, takeSnapshot } from './snapshot.js';
 
 type ToolResult = {
   content: Array<{ type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string }>;
@@ -203,6 +203,124 @@ export function registerTools(server: McpServer): void {
   );
 
   server.registerTool(
+    'browser_read_element',
+    {
+      title: '读取元素信息',
+      description:
+        '读取某个网页元素的完整信息：可见文字、标签名、所有属性、状态（显示/启用/选中/焦点）、位置和尺寸、指定 CSS 样式。ref 和 selector 二选一。文字藏在封闭影子节点里（普通脚本读不到）时会自动用浏览器调试协议穿透读取。用于查看按钮文字、输入框当前值、元素属性、布局位置等。',
+      inputSchema: z.object({
+        ref: z.string().optional().describe('快照里的元素编号，例如 e3；与 selector 二选一'),
+        selector: z.string().optional().describe('元素的 CSS 选择器；与 ref 二选一。会搜主文档和所有 iframe'),
+        nth: z.number().int().nonnegative().optional().describe('选择器命中多个时取第几个，从 0 开始，默认 0'),
+        attrs: z.array(z.string()).optional().describe('额外要读的属性名，例如 ["href","data-id"]；常用属性默认全读'),
+        styles: z.array(z.string()).optional().describe('要读的 CSS 样式属性名，例如 ["font-size","color"]'),
+      }),
+    },
+    async ({ ref, selector, nth, attrs, styles }) => {
+      const intent = `准备：读取元素信息 ${hintLabel(ref, selector)}`;
+      return act(intent, async (page) => {
+        const target = await resolveTarget(page, ref, selector, nth);
+        const cssProps = styles ?? [];
+        const attrNames = attrs ?? [];
+        const details = await readElementDetails(page, target.locator, selector, cssProps);
+
+        const pickedAttrs: Record<string, string> = {};
+        for (const name of attrNames) {
+          if (name && name in details.attributes) pickedAttrs[name] = details.attributes[name]!;
+        }
+
+        const text = details.innerText || details.textContent || details.shadowText;
+        const textSource = !details.innerText && !details.textContent && details.shadowText
+          ? '（穿透影子节点读到）'
+          : '';
+        const flag = (ok: boolean) => (ok ? '是' : '否');
+        const lines = [
+          `标签：<${details.tag}>`,
+          `文字：${text ? `「${clip(text, 120)}」` : '（空）'}${textSource}`,
+          `状态：显示=${flag(details.state.visible)} 启用=${flag(details.state.enabled)} 选中=${flag(details.state.checked)} 已选=${flag(details.state.selected)} 焦点=${flag(details.state.focused)}`,
+          details.box
+            ? `位置：x=${details.box.x} y=${details.box.y} 宽=${details.box.width} 高=${details.box.height}`
+            : '位置：无（元素不可见或没有布局）',
+        ];
+        const common = ['id', 'name', 'type', 'value', 'href', 'title', 'placeholder', 'aria-label', 'class', 'disabled', 'checked'];
+        const attrNamesToShow = [...new Set([...common, ...attrNames])];
+        const shown: string[] = [];
+        for (const name of attrNamesToShow) {
+          if (name in details.attributes) shown.push(`${name}="${clip(details.attributes[name]!, 60)}"`);
+        }
+        lines.push(`属性：${shown.length ? shown.join(' ') : '（无）'}`);
+        const styleKeys = Object.keys(details.styles);
+        if (styleKeys.length) {
+          lines.push(`样式：${styleKeys.map((k) => `${k}=${details.styles[k]}`).join(' ')}`);
+        }
+        return `已读取 ${target.label}：\n${lines.join('\n')}`;
+      });
+    },
+  );
+
+  server.registerTool(
+    'browser_wait',
+    {
+      title: '等待元素',
+      description:
+        '等待页面里的元素达到某种状态再继续，对标自动化测试的显式等待。用 CSS 选择器定位（会搜主文档和所有 iframe）。状态可选：出现、可见、消失、文字包含某内容。避免用固定延时，页面快慢不一。超时会失败并说明。',
+      inputSchema: z.object({
+        selector: z.string().describe('元素的 CSS 选择器'),
+        state: z.enum(['attached', 'visible', 'hidden', 'detached', 'text']).describe('等待的状态：attached 出现到 DOM、visible 可见、hidden 不可见、detached 从 DOM 消失、text 文字包含指定内容'),
+        text: z.string().optional().describe('state=text 时要等待包含的文字'),
+        timeout: z.number().int().positive().max(120000).optional().describe('最长等待毫秒数，默认 10000'),
+      }),
+    },
+    async ({ selector, state, text, timeout }) => {
+      const stateLabel: Record<string, string> = {
+        attached: '出现', visible: '可见', hidden: '隐藏', detached: '消失', text: `文字包含「${clip(text ?? '')}」`,
+      };
+      const intent = `准备：等待元素 ${clip(selector, 40)} ${stateLabel[state] ?? state}`;
+      return act(intent, async (page) => {
+        if (state === 'text' && !text) throw new Error('state=text 时需要提供 text 参数');
+        const ms = timeout ?? 10000;
+        const deadline = Date.now() + ms;
+
+        if (state === 'text') {
+          let seen = '';
+          while (Date.now() < deadline) {
+            for (const frame of page.frames()) {
+              const loc = frame.locator(selector).first();
+              try {
+                const content = await loc.evaluate((el) => (el as HTMLElement).innerText || (el as HTMLElement).textContent || '', { timeout: 300 });
+                if ((content || '').includes(text!)) {
+                  return `元素 ${clip(selector, 40)} 的文字已包含「${clip(text!, 40)}」：${clip(content, 80)}`;
+                }
+                seen = content || '';
+              } catch {
+                /* 元素还没出现，继续等。 */
+              }
+            }
+            await sleep(200);
+          }
+          throw new Error(`等待超时（${ms}ms）：元素 ${clip(selector, 40)} 的文字未包含「${clip(text!, 40)}」${seen ? `，当前是「${clip(seen, 60)}」` : ''}`);
+        }
+
+        const playState = state === 'attached' ? 'attached' : state === 'visible' ? 'visible' : state === 'hidden' ? 'hidden' : 'detached';
+        let lastError = '';
+        while (Date.now() < deadline) {
+          for (const frame of page.frames()) {
+            const loc = frame.locator(selector).first();
+            try {
+              await loc.waitFor({ state: playState as 'attached' | 'visible' | 'hidden' | 'detached', timeout: Math.max(200, deadline - Date.now()) });
+              return `元素 ${clip(selector, 40)} 已${stateLabel[state] ?? state}`;
+            } catch (err) {
+              lastError = err instanceof Error ? err.message : String(err);
+            }
+          }
+          await sleep(150);
+        }
+        throw new Error(`等待超时（${ms}ms）：元素 ${clip(selector, 40)} 未达到「${stateLabel[state] ?? state}」状态。${clip(lastError, 120)}`);
+      });
+    },
+  );
+
+  server.registerTool(
     'browser_type',
     {
       title: '拟人输入',
@@ -345,6 +463,54 @@ export function registerTools(server: McpServer): void {
         await humanScroll(page, session.pointer, direction, pixels);
         await sleep(120);
         return `已${way}滚动`;
+      });
+    },
+  );
+
+  server.registerTool(
+    'browser_dialog',
+    {
+      title: '处理弹窗',
+      description:
+        '处理网页弹出的 JavaScript 提示框（alert 警告、confirm 确认、prompt 输入）。这类弹窗会挡住页面，必须先处理才能继续操作。action=accept 点确定、dismiss 点取消、text 是给 prompt 填的文字、message 返回弹窗内容。可以先设 auto 让之后的弹窗自动处理。',
+      inputSchema: z.object({
+        action: z.enum(['accept', 'dismiss']).describe('accept 点确定，dismiss 点取消'),
+        text: z.string().optional().describe('prompt 输入框里要填的文字，仅 accept 时有效'),
+      }),
+    },
+    async ({ action, text }) => {
+      const intent = `准备：处理弹窗（${action === 'accept' ? '确定' : '取消'}）`;
+      return act(intent, async (page) => {
+        const dialog = await new Promise<{ message: string; type: string; defaultValue: string } | null>((resolve) => {
+          let done = false;
+          const handler = async (d: Dialog) => {
+            if (done) return;
+            done = true;
+            page.off('dialog', handler);
+            const info = { message: d.message(), type: d.type(), defaultValue: d.defaultValue() };
+            try {
+              if (action === 'accept') await d.accept(text);
+              else await d.dismiss();
+              resolve(info);
+            } catch (err) {
+              resolve({ ...info, message: `${info.message}（处理失败：${err instanceof Error ? err.message : String(err)}）` });
+            }
+          };
+          page.on('dialog', handler);
+          setTimeout(() => {
+            if (!done) {
+              done = true;
+              page.off('dialog', handler);
+              resolve(null);
+            }
+          }, 5000);
+        });
+        if (!dialog) {
+          throw new Error('5 秒内没有等到弹窗。先执行会触发弹窗的操作（例如点某个按钮），再调用本工具；弹窗会阻塞页面，所以本工具需要先挂起等待它出现。');
+        }
+        const typeLabel: Record<string, string> = { alert: '警告', confirm: '确认', prompt: '输入' };
+        const how = action === 'accept' ? '已确定' : '已取消';
+        return `${how}${typeLabel[dialog.type] ?? dialog.type}框「${clip(dialog.message, 80)}」${action === 'accept' && text !== undefined ? `，填入「${clip(text)}」` : ''}`;
       });
     },
   );
