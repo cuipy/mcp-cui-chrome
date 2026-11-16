@@ -373,3 +373,91 @@ export async function locatorFor(page: Page, store: RefStore, ref: string): Prom
   if ((await locator.count()) === 0) throw new Error(`编号 ${ref} 已过期，请重新 snapshot`);
   return locator.first();
 }
+
+/** CSS 选择器命中后的定位结果，带控件类型和位置，供工具反馈和输入校验用。 */
+export type SelectorTarget = {
+  locator: Locator;
+  label: string;
+  gesture: string;
+};
+
+const inspectElement = new Function(
+  'el',
+  `
+    const tag = el.tagName.toLowerCase();
+    const type = (el.getAttribute('type') || 'text').toLowerCase();
+    let role = (el.getAttribute('role') || '').split(/\\s+/)[0] || '';
+    if (!role) {
+      if (tag === 'a') role = 'link';
+      else if (tag === 'button' || tag === 'summary' || (tag === 'input' && ['button','submit','reset','image'].includes(type))) role = 'button';
+      else if (tag === 'textarea' || (tag === 'input' && !['checkbox','radio','range','file','hidden'].includes(type)) || el.getAttribute('contenteditable') === 'true') role = 'textbox';
+      else if (tag === 'input' && type === 'checkbox') role = 'checkbox';
+      else if (tag === 'input' && type === 'radio') role = 'radio';
+      else if (tag === 'input' && type === 'range') role = 'slider';
+      else if (tag === 'select') role = 'combobox';
+    }
+    let gesture = '点击';
+    if (role === 'textbox' || role === 'searchbox') gesture = '输入文字';
+    else if (role === 'slider') gesture = '拖动';
+    else if (role === 'checkbox' || role === 'radio' || role === 'switch') gesture = '点击切换';
+    else if (role === 'combobox' || role === 'listbox') gesture = '点开后点选一项，不要输入文字';
+    else if (['option','menuitem','treeitem'].includes(role)) gesture = '点击选中';
+    const name = (el.getAttribute('aria-label') || el.getAttribute('placeholder') || (el.innerText || el.textContent || '').trim() || el.getAttribute('title') || '').replace(/\\s+/g, ' ').trim().slice(0, 60);
+    return {
+      role,
+      gesture,
+      name,
+      disabled: el.matches(':disabled') || el.getAttribute('aria-disabled') === 'true',
+    };
+  `,
+) as (el: Element) => { role: string; gesture: string; name: string; disabled: boolean };
+
+/**
+ * 按 CSS 选择器定位。主文档和所有 iframe 都会搜，命中按 frame 顺序排列。
+ * 编号方式失效时的后备手段：不依赖快照，也不要求元素出现在可操作元素列表里。
+ */
+export async function locatorForSelector(page: Page, selector: string, nth = 0): Promise<SelectorTarget> {
+  const query = selector.trim();
+  if (!query) throw new Error('CSS 选择器不能为空');
+  const main = page.mainFrame();
+  const hits: Array<{ frame: Frame; index: number; where: string }> = [];
+  let syntaxError = '';
+
+  for (const frame of page.frames()) {
+    let count = 0;
+    try {
+      count = await frame.locator(query).count();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!syntaxError) syntaxError = message.replace(/\s+/g, ' ').trim().slice(0, 200);
+      continue;
+    }
+    const where = frame === main ? '' : ` 在iframe(${sketch(frame.url() || frame.name() || 'about:blank')})`;
+    for (let i = 0; i < count; i += 1) hits.push({ frame, index: i, where });
+  }
+
+  if (hits.length === 0) {
+    if (syntaxError) throw new Error(`CSS 选择器「${query}」无效：${syntaxError}`);
+    throw new Error(`CSS 选择器「${query}」没有匹配到元素。先 snapshot 看页面结构，或换个选择器。`);
+  }
+  if (nth >= hits.length) {
+    throw new Error(`CSS 选择器「${query}」只匹配到 ${hits.length} 个元素，没有第 ${nth} 个。`);
+  }
+  if (hits.length > 1 && nth === 0 && !query.includes(':nth-match')) {
+    const samples: string[] = [];
+    for (const hit of hits.slice(0, 5)) {
+      const info = await hit.frame.locator(query).nth(hit.index).evaluate(inspectElement).catch(() => null);
+      samples.push(`第 ${hit.index} 个${info?.name ? `「${sketch(info.name)}」` : ''}${hit.where}`);
+    }
+    const rest = hits.length > 5 ? `，另有 ${hits.length - 5} 个` : '';
+    throw new Error(
+      `CSS 选择器「${query}」匹配到 ${hits.length} 个元素：${samples.join('；')}${rest}。请写更精确的选择器，或传 nth 指定第几个（从 0 开始）。`,
+    );
+  }
+
+  const hit = hits[nth]!;
+  const target = hit.frame.locator(query).nth(hit.index);
+  const info = await target.evaluate(inspectElement).catch(() => null);
+  const label = `CSS「${sketch(query, 40)}」${info?.name ? `「${sketch(info.name, 30)}」` : ''}${info?.disabled ? ' 禁用' : ''}${hit.where}`;
+  return { locator: target, label, gesture: info?.gesture ?? '' };
+}

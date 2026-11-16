@@ -1,5 +1,5 @@
 import type { McpServer } from '@modelcontextprotocol/server';
-import type { Page } from 'rebrowser-playwright';
+import type { Locator, Page } from 'rebrowser-playwright';
 import * as z from 'zod/v4';
 import {
   humanClick,
@@ -13,7 +13,7 @@ import {
 } from './human.js';
 import { session } from './session.js';
 import { setCuiChromeStatus } from './stealth.js';
-import { locatorFor, takeSnapshot } from './snapshot.js';
+import { locatorFor, locatorForSelector, takeSnapshot } from './snapshot.js';
 
 type ToolResult = {
   content: Array<{ type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string }>;
@@ -35,6 +35,31 @@ function targetLabel(ref: string): string {
   const entry = session.refs.get(ref);
   const name = entry?.name.trim();
   return name ? `「${clip(name, 30)}」` : ref;
+}
+
+/** 准备阶段还没有页面可用，先用一个简短的名字写进 intent。 */
+function hintLabel(ref: string | undefined, selector: string | undefined): string {
+  if (selector && selector.trim()) return `CSS「${clip(selector, 40)}」`;
+  if (ref) return targetLabel(ref);
+  return '目标';
+}
+
+type ResolvedTarget = { locator: Locator; label: string; gesture: string };
+
+/** ref 和 selector 二选一：编号走快照，选择器直接按 CSS 找。 */
+async function resolveTarget(
+  page: Page,
+  ref: string | undefined,
+  selector: string | undefined,
+  nth?: number,
+): Promise<ResolvedTarget> {
+  if (selector !== undefined && selector.trim()) {
+    return locatorForSelector(page, selector, nth ?? 0);
+  }
+  if (!ref) throw new Error('请提供 ref（快照编号）或 selector（CSS 选择器），二者至少填一个');
+  const locator = await locatorFor(page, session, ref);
+  const entry = session.refs.get(ref);
+  return { locator, label: targetLabel(ref), gesture: entry?.gesture ?? '' };
 }
 
 async function showStatus(page: Page, status: string): Promise<void> {
@@ -156,21 +181,23 @@ export function registerTools(server: McpServer): void {
     {
       title: '拟人点击',
       description:
-        '通用：按快照编号点击。开始前显示要点的元素，结束后显示是否成功、页面有没有跳转。落点被别的内容挡住时会失败，不点穿过去。',
+        '通用：按快照编号点击，也可用 CSS 选择器。ref 和 selector 二选一，优先用 ref；编号失效、元素没出现在快照里、iframe 里定位不到时用 selector。开始前显示要点的元素，结束后显示是否成功、页面有没有跳转。落点被别的内容挡住时会失败，不点穿过去。',
       inputSchema: z.object({
-        ref: z.string().describe('快照里的元素编号，例如 e3'),
+        ref: z.string().optional().describe('快照里的元素编号，例如 e3；与 selector 二选一'),
+        selector: z.string().optional().describe('CSS 选择器，例如 #login-btn、input[name="user"]；与 ref 二选一。会搜主文档和所有 iframe，命中多个要传 nth 或写更精确'),
+        nth: z.number().int().nonnegative().optional().describe('选择器命中多个时取第几个，从 0 开始，默认 0'),
         button: z.enum(['left', 'right', 'middle']).optional().describe('鼠标按键，默认左键'),
       }),
     },
-    async ({ ref, button }) => {
-      const intent = `准备：点击 ${targetLabel(ref)}`;
+    async ({ ref, selector, nth, button }) => {
+      const intent = `准备：点击 ${hintLabel(ref, selector)}`;
       return act(intent, async (page) => {
         const before = page.url();
-        const locator = await locatorFor(page, session, ref);
-        await humanClick(page, session.pointer, locator, button ?? 'left');
+        const target = await resolveTarget(page, ref, selector, nth);
+        await humanClick(page, session.pointer, target.locator, button ?? 'left');
         await settle(page);
         const after = (await session.ensure()).url();
-        return after === before ? `已点击 ${targetLabel(ref)}` : `已点击 ${targetLabel(ref)}，页面到了 ${after}`;
+        return after === before ? `已点击 ${target.label}` : `已点击 ${target.label}，页面到了 ${after}`;
       });
     },
   );
@@ -179,33 +206,35 @@ export function registerTools(server: McpServer): void {
     'browser_type',
     {
       title: '拟人输入',
-      description: '通用：只对文本框逐字输入。下拉框、选项、按钮会直接失败，并说明该用点选还是点击。',
+      description:
+        '通用：只对文本框逐字输入。ref 和 selector 二选一，优先用 ref；输入框漏编号或被遮挡时用 selector。下拉框、选项、按钮会直接失败，并说明该用点选还是点击。',
       inputSchema: z.object({
-        ref: z.string().describe('输入框编号，例如 e2'),
+        ref: z.string().optional().describe('输入框编号，例如 e2；与 selector 二选一'),
+        selector: z.string().optional().describe('输入框的 CSS 选择器，例如 input[name="email"]；与 ref 二选一。会搜主文档和所有 iframe'),
+        nth: z.number().int().nonnegative().optional().describe('选择器命中多个时取第几个，从 0 开始，默认 0'),
         text: z.string().describe('要输入的文字'),
         clear: z.boolean().optional().describe('输入前先全选并删除已有内容'),
         submit: z.boolean().optional().describe('输入完成后按 Enter'),
       }),
     },
-    async ({ ref, text, clear, submit }) => {
-      const intent = `准备：在 ${targetLabel(ref)} 输入「${clip(text)}」`;
+    async ({ ref, selector, nth, text, clear, submit }) => {
+      const intent = `准备：在 ${hintLabel(ref, selector)} 输入「${clip(text)}」`;
       return act(intent, async (page) => {
-        const entry = session.refs.get(ref);
-        if (entry?.gesture && !entry.gesture.startsWith('输入')) {
-          throw new Error(`${ref} 的操作是「${entry.gesture}」，不能往里面输入文字`);
+        const target = await resolveTarget(page, ref, selector, nth);
+        if (target.gesture && !target.gesture.startsWith('输入')) {
+          throw new Error(`${target.label} 的操作是「${target.gesture}」，不能往里面输入文字`);
         }
-        const locator = await locatorFor(page, session, ref);
-        await humanType(page, session.pointer, locator, text, clear ?? false);
+        await humanType(page, session.pointer, target.locator, text, clear ?? false);
         if (submit) await humanPress(page, 'Enter');
         await settle(page);
         let shown = '';
         try {
-          shown = await locator.inputValue();
+          shown = await target.locator.inputValue();
         } catch {
           shown = '';
         }
         const wrote = shown ? `框里现在是「${clip(shown)}」` : '已逐字输入';
-        return `已在 ${targetLabel(ref)} 输入。${wrote}`;
+        return `已在 ${target.label} 输入。${wrote}`;
       });
     },
   );
@@ -233,17 +262,19 @@ export function registerTools(server: McpServer): void {
     'browser_hover',
     {
       title: '悬停',
-      description: '通用：把鼠标移到编号对应的元素上，不点击。用来展开需要悬停才出现的菜单。',
+      description: '通用：把鼠标移到元素上，不点击。ref 和 selector 二选一，优先用 ref。用来展开需要悬停才出现的菜单。',
       inputSchema: z.object({
-        ref: z.string().describe('元素编号，例如 e4'),
+        ref: z.string().optional().describe('元素编号，例如 e4；与 selector 二选一'),
+        selector: z.string().optional().describe('元素的 CSS 选择器；与 ref 二选一。会搜主文档和所有 iframe'),
+        nth: z.number().int().nonnegative().optional().describe('选择器命中多个时取第几个，从 0 开始，默认 0'),
       }),
     },
-    async ({ ref }) => {
-      const intent = `准备：悬停 ${targetLabel(ref)}`;
+    async ({ ref, selector, nth }) => {
+      const intent = `准备：悬停 ${hintLabel(ref, selector)}`;
       return act(intent, async (page) => {
-        const locator = await locatorFor(page, session, ref);
-        await humanHover(page, session.pointer, locator);
-        return `鼠标已移到 ${targetLabel(ref)}`;
+        const target = await resolveTarget(page, ref, selector, nth);
+        await humanHover(page, session.pointer, target.locator);
+        return `鼠标已移到 ${target.label}`;
       });
     },
   );
@@ -252,38 +283,47 @@ export function registerTools(server: McpServer): void {
     'browser_drag',
     {
       title: '拖拽',
-      description: '通用：按住一个元素，拖到另一个元素上，或按像素偏移拖动。用于滑块、排序和需要拖动的控件。',
+      description:
+        '通用：按住一个元素，拖到另一个元素上，或按像素偏移拖动。起点终点的 ref 和 selector 各二选一，优先用 ref。用于滑块、排序和需要拖动的控件。',
       inputSchema: z.object({
-        from: z.string().describe('拖动起点的元素编号'),
-        to: z.string().optional().describe('拖动终点的元素编号'),
-        dx: z.number().optional().describe('没有 to 时，相对起点向右的像素，向左用负数'),
-        dy: z.number().optional().describe('没有 to 时，相对起点向下的像素，向上用负数'),
+        from: z.string().optional().describe('拖动起点的元素编号；与 fromSelector 二选一'),
+        fromSelector: z.string().optional().describe('拖动起点的 CSS 选择器；与 from 二选一'),
+        fromNth: z.number().int().nonnegative().optional().describe('起点选择器命中多个时取第几个，从 0 开始'),
+        to: z.string().optional().describe('拖动终点的元素编号；与 toSelector 二选一'),
+        toSelector: z.string().optional().describe('拖动终点的 CSS 选择器；与 to 二选一'),
+        toNth: z.number().int().nonnegative().optional().describe('终点选择器命中多个时取第几个，从 0 开始'),
+        dx: z.number().optional().describe('没有终点时，相对起点向右的像素，向左用负数'),
+        dy: z.number().optional().describe('没有终点时，相对起点向下的像素，向上用负数'),
       }),
     },
-    async ({ from, to, dx, dy }) => {
-      const intent = to ? `准备：把 ${targetLabel(from)} 拖到 ${targetLabel(to)}` : `准备：拖动 ${targetLabel(from)}`;
+    async ({ from, fromSelector, fromNth, to, toSelector, toNth, dx, dy }) => {
+      const hasTo = Boolean(to || (toSelector && toSelector.trim()));
+      const fromHint = hintLabel(from, fromSelector);
+      const intent = hasTo
+        ? `准备：把 ${fromHint} 拖到 ${hintLabel(to, toSelector)}`
+        : `准备：拖动 ${fromHint}`;
       return act(intent, async (page) => {
-        if (!to && dx === undefined && dy === undefined) {
-          throw new Error('拖拽需要终点编号 to，或像素偏移 dx、dy');
+        if (!hasTo && dx === undefined && dy === undefined) {
+          throw new Error('拖拽需要终点（to 或 toSelector），或像素偏移 dx、dy');
         }
-        const source = await locatorFor(page, session, from);
-        if (to) {
-          const target = await locatorFor(page, session, to);
-          const box = await target.boundingBox();
-          if (!box) throw new Error(`编号 ${to} 没有可拖到的位置`);
-          await humanDrag(page, session.pointer, source, {
+        const source = await resolveTarget(page, from, fromSelector, fromNth);
+        if (hasTo) {
+          const target = await resolveTarget(page, to, toSelector, toNth);
+          const box = await target.locator.boundingBox();
+          if (!box) throw new Error(`${target.label} 没有可拖到的位置`);
+          await humanDrag(page, session.pointer, source.locator, {
             x: box.x + box.width / 2,
             y: box.y + box.height / 2,
           });
-          return `已把 ${targetLabel(from)} 拖到 ${targetLabel(to)}`;
+          return `已把 ${source.label} 拖到 ${target.label}`;
         }
-        const box = await source.boundingBox();
-        if (!box) throw new Error(`编号 ${from} 没有可拖动的位置`);
-        await humanDrag(page, session.pointer, source, {
+        const box = await source.locator.boundingBox();
+        if (!box) throw new Error(`${source.label} 没有可拖动的位置`);
+        await humanDrag(page, session.pointer, source.locator, {
           x: box.x + box.width / 2 + (dx ?? 0),
           y: box.y + box.height / 2 + (dy ?? 0),
         });
-        return `已拖动 ${targetLabel(from)}`;
+        return `已拖动 ${source.label}`;
       });
     },
   );
