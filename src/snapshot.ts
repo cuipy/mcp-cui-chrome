@@ -1,5 +1,5 @@
-import type { Locator, Page } from 'rebrowser-playwright';
-import type { RefEntry } from './session.js';
+import type { Frame, Locator, Page } from 'rebrowser-playwright';
+import type { FrameRef, RefEntry } from './session.js';
 
 const INTERACTIVE_SELECTOR = [
   'a[href]',
@@ -45,7 +45,7 @@ const ROLE_LABEL: Record<string, string> = {
   slider: '滑块',
 };
 
-const MAX_REFS = 80;
+const MAX_REFS = 120;
 
 type RawElement = {
   selector: string;
@@ -277,21 +277,59 @@ const readBody = new Function(`
   return text.replace(/\\n{3,}/g, '\\n\\n').trim().slice(0, 2000);
 `) as () => string;
 
+type Collected = RawElement & { frameRef?: FrameRef };
+
+function sketch(text: string, max = 36): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  return flat.length > max ? `${flat.slice(0, max)}…` : flat;
+}
+
 export async function takeSnapshot(page: Page, store: RefStore): Promise<string> {
-  const raw = await page.evaluate(collectElements, INTERACTIVE_SELECTOR);
-  const ordered = [...raw.filter((item) => item.inViewport), ...raw.filter((item) => !item.inViewport)];
+  const frames = page.frames();
+  const main = page.mainFrame();
+  // 分桶：主文档视口内、主文档视口外、iframe 视口内、iframe 视口外。
+  const buckets: Collected[][] = [[], [], [], []];
+
+  for (let index = 0; index < frames.length; index += 1) {
+    const frame = frames[index];
+    if (!frame) continue;
+    let raw: RawElement[];
+    try {
+      raw = await frame.evaluate(collectElements, INTERACTIVE_SELECTOR);
+    } catch {
+      // iframe 还在加载或已销毁时读不到，跳过，不影响主文档。
+      continue;
+    }
+    const frameRef: FrameRef | undefined =
+      frame === main ? undefined : { index, url: frame.url(), name: frame.name() };
+    for (const item of raw) {
+      const bucket = frameRef ? (item.inViewport ? 2 : 3) : item.inViewport ? 0 : 1;
+      buckets[bucket]!.push({ ...item, frameRef });
+    }
+  }
+
+  const ordered = buckets.flat();
   const shown = ordered.slice(0, MAX_REFS);
   store.refs.clear();
   store.refUrl = page.url();
 
   const lines = shown.map((item, index) => {
     const ref = `e${index + 1}`;
-    store.refs.set(ref, { selector: item.selector, role: item.role, name: item.name, gesture: item.gesture });
+    store.refs.set(ref, {
+      selector: item.selector,
+      role: item.role,
+      name: item.name,
+      gesture: item.gesture,
+      frame: item.frameRef,
+    });
     const role = ROLE_LABEL[item.role] ?? item.role;
     const name = item.name ? `「${item.name}」` : '「未命名」';
     const where = item.inViewport ? '视口内' : '视口外';
     const disabled = item.disabled ? ' 禁用' : '';
-    return `- ${ref} ${role}${name} ${where}${disabled} 操作：${item.gesture}`;
+    const inFrame = item.frameRef
+      ? ` 在iframe(${sketch(item.frameRef.url || item.frameRef.name || 'about:blank')})`
+      : '';
+    return `- ${ref} ${role}${name} ${where}${disabled}${inFrame} 操作：${item.gesture}`;
   });
 
   const body = await page.evaluate(readBody);
@@ -302,8 +340,25 @@ export async function takeSnapshot(page: Page, store: RefStore): Promise<string>
   const list = lines.length > 0 ? lines.join('\n') : '（没有可操作元素。若这块内容本该有，刷新一次再读。）';
   const blocks = [`标题：${title || '（无标题）'}`, `网址：${page.url()}`];
   if (cover) blocks.push('', cover);
-  blocks.push('', '元素：', list + tail, '', '正文：', body || '（没有正文）');
+  const frameTotal = frames.length - 1;
+  const frameNote =
+    frameTotal > 0
+      ? `\n页面含 ${frameTotal} 个 iframe；iframe 内的可操作元素已一并编号（标「在iframe」）。`
+      : '';
+  blocks.push('', '元素：', list + tail + frameNote, '', '正文：', body || '（没有正文）');
   return blocks.join('\n');
+}
+
+/** 把记录下来的 iframe 找回当前页面里的实际 frame，位置、网址、名字都可能变。 */
+function resolveFrame(page: Page, target: FrameRef): Frame {
+  const frames = page.frames();
+  const exact = frames[target.index];
+  if (exact && exact.url() === target.url && exact.name() === target.name) return exact;
+  const byName = frames.find((frame) => frame.url() === target.url && frame.name() === target.name);
+  if (byName) return byName;
+  const byUrl = frames.find((frame) => frame.url() === target.url);
+  if (byUrl) return byUrl;
+  throw new Error('编号所在的 iframe 已经变化，请重新 snapshot');
 }
 
 export async function locatorFor(page: Page, store: RefStore, ref: string): Promise<Locator> {
@@ -313,7 +368,8 @@ export async function locatorFor(page: Page, store: RefStore, ref: string): Prom
   }
   const entry = store.refs.get(ref);
   if (!entry) throw new Error(`没有编号 ${ref}，请先 snapshot`);
-  const locator = page.locator(entry.selector);
+  const frame = entry.frame ? resolveFrame(page, entry.frame) : page.mainFrame();
+  const locator = frame.locator(entry.selector);
   if ((await locator.count()) === 0) throw new Error(`编号 ${ref} 已过期，请重新 snapshot`);
   return locator.first();
 }

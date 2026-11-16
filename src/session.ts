@@ -4,12 +4,22 @@ import { chromium, type Browser, type BrowserContext, type Page } from 'rebrowse
 import { withBrowserLock } from './lock.js';
 import { persistentContextOptions, profileDir, showCuiChromeBar, stripPlaywrightArtifacts } from './stealth.js';
 
+/** 元素所在的 iframe。主文档的元素不填这个字段。 */
+export type FrameRef = {
+  /** 在 page.frames() 里的位置，操作时从主文档开始重新数。 */
+  index: number;
+  url: string;
+  name: string;
+};
+
 export type RefEntry = {
   selector: string;
   role: string;
   name: string;
   /** 这个控件该用的操作，例如输入文字、点开后点选、拖动。 */
   gesture: string;
+  /** 元素在 iframe 里时记录所属框架；主文档不填。 */
+  frame?: FrameRef;
 };
 
 class Session {

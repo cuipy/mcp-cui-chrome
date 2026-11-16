@@ -1,7 +1,16 @@
 import type { McpServer } from '@modelcontextprotocol/server';
 import type { Page } from 'rebrowser-playwright';
 import * as z from 'zod/v4';
-import { humanClick, humanDrag, humanHover, humanPress, humanScroll, humanType, sleep } from './human.js';
+import {
+  humanClick,
+  humanDrag,
+  humanHover,
+  humanMove,
+  humanPress,
+  humanScroll,
+  humanType,
+  sleep,
+} from './human.js';
 import { session } from './session.js';
 import { setCuiChromeStatus } from './stealth.js';
 import { locatorFor, takeSnapshot } from './snapshot.js';
@@ -387,6 +396,39 @@ export function registerTools(server: McpServer): void {
         await settle(page);
         if (page.url() === before) throw new Error('没有可以后退的历史');
         return `已后退到 ${page.url()}`;
+      });
+    },
+  );
+
+  server.registerTool(
+    'browser_click_at',
+    {
+      title: '按坐标点击',
+      description:
+        '通用：按视口坐标点击，用于 canvas、图表、验证码这类没有 DOM 元素可点的画布。先用 browser_screenshot 看清位置，再给出横纵坐标。走拟人轨迹移动过去再点。',
+      inputSchema: z.object({
+        x: z.number().int().nonnegative().describe('视口内横坐标，像素，从左边算'),
+        y: z.number().int().nonnegative().describe('视口内纵坐标，像素，从上边算'),
+        button: z.enum(['left', 'right', 'middle']).optional().describe('鼠标按键，默认左键'),
+      }),
+    },
+    async ({ x, y, button }) => {
+      const intent = `准备：在坐标 (${x}, ${y}) 点击`;
+      return act(intent, async (page) => {
+        const before = page.url();
+        const view = await page.evaluate(() => ({ w: window.innerWidth, h: window.innerHeight }));
+        if (x >= view.w || y >= view.h) {
+          throw new Error(`坐标 (${x}, ${y}) 超出视口 ${view.w}x${view.h}，先截图确认位置`);
+        }
+        const press = button ?? 'left';
+        await humanMove(page, session.pointer, { x, y });
+        await sleep(80 + Math.random() * 140);
+        await page.mouse.down({ button: press });
+        await sleep(40 + Math.random() * 60);
+        await page.mouse.up({ button: press });
+        await settle(page);
+        const after = (await session.ensure()).url();
+        return after === before ? `已在 (${x}, ${y}) 点击` : `已在 (${x}, ${y}) 点击，页面到了 ${after}`;
       });
     },
   );

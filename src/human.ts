@@ -131,6 +131,7 @@ const hitCover = new Function(
   'el',
   'point',
   `
+    if (point.x < 0 || point.y < 0 || point.x > window.innerWidth || point.y > window.innerHeight) return '';
     const hit = document.elementFromPoint(point.x, point.y);
     if (!hit || hit === el || el.contains(hit) || hit.contains(el)) return '';
     if (hit.closest && hit.closest('#cui-chrome-bar')) return '';
