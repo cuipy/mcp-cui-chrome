@@ -433,6 +433,91 @@ export function registerTools(server: McpServer): void {
     },
   );
 
+  const CHALLENGE_PATTERNS = [
+    'challenges\\.cloudflare\\.com',
+    'turnstile',
+    'recaptcha',
+    'hcaptcha',
+    'arkoselabs',
+    'funcaptcha',
+    'captcha',
+    'challenge',
+  ];
+
+  const collectChallengeFrames = new Function(
+    'patterns',
+    `
+      const items = [];
+      for (const frame of document.querySelectorAll('iframe')) {
+        const rect = frame.getBoundingClientRect();
+        if (rect.width < 8 || rect.height < 8) continue;
+        const src = frame.getAttribute('src') || '';
+        const title = frame.getAttribute('title') || '';
+        items.push({
+          src: src.replace(/\\s+/g, ' ').trim().slice(0, 120),
+          title: title.replace(/\\s+/g, ' ').trim().slice(0, 60),
+          hit: patterns.some((p) => new RegExp(p, 'i').test(src) || new RegExp(p, 'i').test(title)),
+          box: {
+            x: Math.round(rect.x),
+            y: Math.round(rect.y),
+            width: Math.round(rect.width),
+            height: Math.round(rect.height),
+          },
+        });
+      }
+      return items;
+    `,
+  ) as (
+    patterns: string[],
+  ) => Array<{ src: string; title: string; hit: boolean; box: { x: number; y: number; width: number; height: number } }>;
+
+  server.registerTool(
+    'browser_solve_challenge',
+    {
+      title: '过人机验证',
+      description:
+        '通用：自动找页面里的人机验证组件（按 iframe 网址和标题匹配 Cloudflare Turnstile、reCAPTCHA、hCaptcha 等），算出复选框位置并拟人点击。点击后稍等验证转圈，再用截图确认。失败时不要反复重试，容易触发更严的挑战。',
+      inputSchema: z.object({
+        index: z
+          .number()
+          .int()
+          .nonnegative()
+          .optional()
+          .describe('页面上出现多个验证框时选第几个，从 0 开始，默认第一个'),
+      }),
+    },
+    async ({ index }) => {
+      const intent = '准备：定位并点击页面里的人机验证';
+      return act(intent, async (page) => {
+        const boxes = (await page.evaluate(collectChallengeFrames, CHALLENGE_PATTERNS)).filter((item) => item.hit);
+        if (boxes.length === 0) {
+          throw new Error(
+            '页面上没有找到人机验证组件（Cloudflare、reCAPTCHA、hCaptcha 等）。验证框若在别的容器里，先截图看清位置，再用 browser_click_at 按坐标点。',
+          );
+        }
+        const target = boxes[Math.min(index ?? 0, boxes.length - 1)]!;
+        const point = {
+          x: target.box.x + Math.max(12, Math.round(target.box.width * 0.12)),
+          y: target.box.y + Math.round(target.box.height / 2),
+        };
+        const view = await page.evaluate(() => ({ w: window.innerWidth, h: window.innerHeight }));
+        if (point.x < 0 || point.y < 0 || point.x >= view.w || point.y >= view.h) {
+          throw new Error(
+            `验证框复选框位置 (${point.x}, ${point.y}) 超出视口 ${view.w}x${view.h}，先滚动页面让它进视口再试`,
+          );
+        }
+        await humanMove(page, session.pointer, point);
+        await sleep(100 + Math.random() * 160);
+        await page.mouse.down();
+        await sleep(40 + Math.random() * 70);
+        await page.mouse.up();
+        await sleep(2200 + Math.random() * 900);
+        const which = target.title || target.src;
+        return `已点击验证框「${clip(which, 40)}」位置 (${point.x}, ${point.y})，等了约 3 秒。用 browser_screenshot 确认是否显示成功。`;
+      });
+    },
+  );
+
   server.registerTool(
     'browser_screenshot',
     {
@@ -451,7 +536,9 @@ export function registerTools(server: McpServer): void {
           const result = '结果：成功。已截取当前视口';
           await showStatus(page, result);
           const title = await page.title();
-          return { data: buffer.toString('base64'), caption: `${intent}\n${result}\n${title}\n${page.url()}` };
+          const view = await page.evaluate(() => ({ w: window.innerWidth, h: window.innerHeight }));
+          const caption = `${intent}\n${result}\n${title}\n${page.url()}\n视口 ${view.w}x${view.h}（截图是设备像素，除以缩放比才是这里的坐标）`;
+          return { data: buffer.toString('base64'), caption };
         });
         return {
           content: [
